@@ -139,7 +139,7 @@ class LTFeatureVisualization:
                                        "tooltip": "L2 regularization weight"}),
                 "use_augmentation": ("BOOLEAN", {"default": True,
                                                 "tooltip": "Use jitter, scaling, rotation"}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffff,
                                 "tooltip": "Random seed for initialization"}),
             },
             "optional": {
@@ -158,6 +158,8 @@ class LTFeatureVisualization:
                   image_size, tv_weight, l2_weight, use_augmentation, seed, positive=None, negative=None):
         """Generate feature visualization using activation maximization."""
 
+        # Ensure seed is within valid range for numpy (0 to 2^32-1)
+        seed = seed % (2**32)
         torch.manual_seed(seed)
         np.random.seed(seed)
 
@@ -171,6 +173,10 @@ class LTFeatureVisualization:
 
         # Setup optimizer
         optimizer = torch.optim.Adam([img], lr=learning_rate)
+
+        # Load model to device using ComfyUI's model management
+        import comfy.model_management as mm
+        mm.load_model_gpu(model)
 
         # Setup activation hook
         hook = ActivationHook()
@@ -410,6 +416,9 @@ class LTActivationAtlas:
             return {"ui": {"html": (f"<div class='text-red-600'>Error: {str(e)}</div>",)}}
 
         try:
+            # Load model to device using ComfyUI's model management
+            mm.load_model_gpu(model)
+
             # Forward pass
             timesteps = torch.tensor([timestep], device=device)
 
