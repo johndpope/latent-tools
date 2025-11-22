@@ -111,7 +111,9 @@ class QSamplerEulerAncestral:
             print(noise_samples)
 
             # return torch.randn((noise_samples.shape[0], *noise_samples.shape[2:]), device=model.load_device)
-            sample = noise_samples[:,i[0] % noise_samples.shape[1],:,:,:].to(model.load_device)
+            import comfy.model_management as mm
+            device = mm.get_torch_device()
+            sample = noise_samples[:,i[0] % noise_samples.shape[1],:,:,:].to(device)
             i[0] += 1
             return sample
 

@@ -141,6 +141,10 @@ class LTFeatureVisualization:
                                                 "tooltip": "Use jitter, scaling, rotation"}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
                                 "tooltip": "Random seed for initialization"}),
+            },
+            "optional": {
+                "positive": ("CONDITIONING", {"tooltip": "Positive text conditioning to guide feature visualization"}),
+                "negative": ("CONDITIONING", {"tooltip": "Negative text conditioning"}),
             }
         }
 
@@ -151,13 +155,14 @@ class LTFeatureVisualization:
     RETURN_TYPES = ()
 
     def visualize(self, model, layer_name, channel, num_iterations, learning_rate,
-                  image_size, tv_weight, l2_weight, use_augmentation, seed):
+                  image_size, tv_weight, l2_weight, use_augmentation, seed, positive=None, negative=None):
         """Generate feature visualization using activation maximization."""
 
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-        device = model.load_device
+        import comfy.model_management as mm
+        device = mm.get_torch_device()
 
         # Initialize with random noise
         # Use spectral initialization for better results
@@ -208,9 +213,17 @@ class LTFeatureVisualization:
 
                     # Forward pass - this will trigger our hook
                     try:
+                        # Check if model needs class conditioning (SDXL models)
+                        y = None
+                        if hasattr(model.model.model_config, 'unet_config'):
+                            unet_config = model.model.model_config.unet_config
+                            if unet_config.get('num_classes', None) == 'sequential' or unet_config.get('adm_in_channels', None) is not None:
+                                adm_channels = unet_config.get('adm_in_channels', 2816)
+                                y = torch.zeros((img_normalized.shape[0], adm_channels), device=device)
+
                         _ = model.model.diffusion_model(img_normalized,
                                                        timesteps=torch.zeros(1, device=device),
-                                                       context=None)
+                                                       context=None, y=y)
                     except (AttributeError, RuntimeError, TypeError) as e:
                         # Some models need different inputs, try simpler approach
                         # Log the specific error for debugging
@@ -358,11 +371,15 @@ class LTActivationAtlas:
                 "latent": ("LATENT", {"tooltip": "Input latent to analyze"}),
                 "layer_name": ("STRING", {"default": "middle_block.1.transformer_blocks.0.attn1.to_q",
                                          "multiline": False}),
-                "channels": ("STRING", {"default": "0,1,2,3,4,5,6,7",
+                "channels": ("STRING", {"default": "0,1,2,3",
                                        "multiline": False,
                                        "tooltip": "Comma-separated channel indices"}),
                 "timestep": ("INT", {"default": 500, "min": 0, "max": 999,
                                     "tooltip": "Diffusion timestep"}),
+            },
+            "optional": {
+                "positive": ("CONDITIONING", {"tooltip": "Positive text conditioning"}),
+                "negative": ("CONDITIONING", {"tooltip": "Negative text conditioning"}),
             }
         }
 
@@ -372,10 +389,11 @@ class LTActivationAtlas:
     OUTPUT_NODE = True
     RETURN_TYPES = ()
 
-    def visualize(self, model, latent, layer_name, channels, timestep):
+    def visualize(self, model, latent, layer_name, channels, timestep, positive=None, negative=None):
         """Create activation atlas visualization."""
 
-        device = model.load_device
+        import comfy.model_management as mm
+        device = mm.get_torch_device()
         latent_samples = latent["samples"].to(device)
 
         # Parse channel indices
@@ -394,8 +412,41 @@ class LTActivationAtlas:
         try:
             # Forward pass
             timesteps = torch.tensor([timestep], device=device)
+
+            # Prepare context from conditioning if provided
+            context = None
+            if positive is not None:
+                # Extract the conditioning tensor from the positive conditioning
+                # ComfyUI conditioning format: [[tensor, dict], ...]
+                if isinstance(positive, list) and len(positive) > 0:
+                    context = positive[0][0] if isinstance(positive[0], (list, tuple)) else positive[0]
+                    if hasattr(context, 'to'):
+                        context = context.to(device)
+
+            # Check if model needs class conditioning (SDXL models)
+            y = None
+            if hasattr(model.model.model_config, 'unet_config'):
+                unet_config = model.model.model_config.unet_config
+                if unet_config.get('num_classes', None) == 'sequential' or unet_config.get('adm_in_channels', None) is not None:
+                    # Create a minimal y vector for SDXL models
+                    # This uses default values: 1024x1024 image, no crops, aesthetic score 6.0
+                    adm_channels = unet_config.get('adm_in_channels', 2816)
+                    y = torch.zeros((latent_samples.shape[0], adm_channels), device=device)
+
+                    # If we have conditioning with pooled output (SDXL), use it
+                    if positive is not None and isinstance(positive, list) and len(positive) > 0:
+                        if isinstance(positive[0], (list, tuple)) and len(positive[0]) > 1:
+                            cond_dict = positive[0][1] if isinstance(positive[0][1], dict) else {}
+                            if 'pooled_output' in cond_dict:
+                                pooled = cond_dict['pooled_output'].to(device)
+                                # Ensure y has the right shape by padding or truncating
+                                if pooled.shape[-1] <= adm_channels:
+                                    y[:, :pooled.shape[-1]] = pooled
+                                else:
+                                    y = pooled[:, :adm_channels]
+
             with torch.no_grad():
-                _ = model.model.diffusion_model(latent_samples, timesteps=timesteps, context=None)
+                _ = model.model.diffusion_model(latent_samples, timesteps=timesteps, context=context, y=y)
 
             # Get activations
             if layer_name not in hook.activations:

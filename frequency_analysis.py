@@ -126,8 +126,9 @@ class LTFrequencyResponse:
         """Measure frequency response."""
 
         from .feature_visualization import ActivationHook
+        import comfy.model_management as mm
 
-        device = model.load_device
+        device = mm.get_torch_device()
 
         # Generate test frequencies (log scale)
         frequencies = np.logspace(np.log10(min_frequency), np.log10(max_frequency),
@@ -162,9 +163,17 @@ class LTFrequencyResponse:
                             _ = model.model.diffusion_model.input_blocks[0](img_tensor)
                         else:
                             # Use full model forward pass as primary approach
+                            # Check if model needs class conditioning (SDXL models)
+                            y = None
+                            if hasattr(model.model.model_config, 'unet_config'):
+                                unet_config = model.model.model_config.unet_config
+                                if unet_config.get('num_classes', None) == 'sequential' or unet_config.get('adm_in_channels', None) is not None:
+                                    adm_channels = unet_config.get('adm_in_channels', 2816)
+                                    y = torch.zeros((img_tensor.shape[0], adm_channels), device=device)
+
                             _ = model.model.diffusion_model(img_tensor,
                                                            timesteps=torch.zeros(1, device=device),
-                                                           context=None)
+                                                           context=None, y=y)
                     except (AttributeError, RuntimeError, TypeError) as e:
                         # If both approaches fail, provide informative error
                         raise ValueError(f"Failed to forward pass through model: {str(e)}. "
@@ -287,8 +296,9 @@ class LTEdgeDetectorAnalysis:
         """Measure orientation tuning."""
 
         from .feature_visualization import ActivationHook
+        import comfy.model_management as mm
 
-        device = model.load_device
+        device = mm.get_torch_device()
 
         # Test orientations
         orientations = np.linspace(0, 180, num_orientations, endpoint=False)
@@ -322,9 +332,17 @@ class LTEdgeDetectorAnalysis:
                             _ = model.model.diffusion_model.input_blocks[0](img_tensor)
                         else:
                             # Use full model forward pass as primary approach
+                            # Check if model needs class conditioning (SDXL models)
+                            y = None
+                            if hasattr(model.model.model_config, 'unet_config'):
+                                unet_config = model.model.model_config.unet_config
+                                if unet_config.get('num_classes', None) == 'sequential' or unet_config.get('adm_in_channels', None) is not None:
+                                    adm_channels = unet_config.get('adm_in_channels', 2816)
+                                    y = torch.zeros((img_tensor.shape[0], adm_channels), device=device)
+
                             _ = model.model.diffusion_model(img_tensor,
                                                            timesteps=torch.zeros(1, device=device),
-                                                           context=None)
+                                                           context=None, y=y)
                     except (AttributeError, RuntimeError, TypeError) as e:
                         # If both approaches fail, provide informative error
                         raise ValueError(f"Failed to forward pass through model: {str(e)}. "
