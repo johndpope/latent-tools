@@ -166,9 +166,12 @@ class LTFeatureVisualization:
         import comfy.model_management as mm
         device = mm.get_torch_device()
 
+        # Get model dtype
+        model_dtype = mm.unet_dtype(model_params=model.model.diffusion_model.state_dict(), supported_dtypes=mm.unet_dtypes(device))
+
         # Initialize with random noise
         # Use spectral initialization for better results
-        img = torch.randn(1, 3, image_size, image_size, device=device) * 0.01
+        img = torch.randn(1, 3, image_size, image_size, device=device, dtype=model_dtype) * 0.01
         img.requires_grad = True
 
         # Setup optimizer
@@ -215,7 +218,7 @@ class LTFeatureVisualization:
                 # For now, we'll just pass the image through to get activations
                 with torch.enable_grad():
                     # Normalize to typical image range
-                    img_normalized = torch.sigmoid(img_aug)
+                    img_normalized = torch.sigmoid(img_aug).to(dtype=model_dtype)
 
                     # Forward pass - this will trigger our hook
                     try:
@@ -225,10 +228,10 @@ class LTFeatureVisualization:
                             unet_config = model.model.model_config.unet_config
                             if unet_config.get('num_classes', None) == 'sequential' or unet_config.get('adm_in_channels', None) is not None:
                                 adm_channels = unet_config.get('adm_in_channels', 2816)
-                                y = torch.zeros((img_normalized.shape[0], adm_channels), device=device)
+                                y = torch.zeros((img_normalized.shape[0], adm_channels), device=device, dtype=model_dtype)
 
                         _ = model.model.diffusion_model(img_normalized,
-                                                       timesteps=torch.zeros(1, device=device),
+                                                       timesteps=torch.zeros(1, device=device, dtype=torch.long),
                                                        context=None, y=y)
                     except (AttributeError, RuntimeError, TypeError) as e:
                         # Some models need different inputs, try simpler approach
@@ -400,7 +403,11 @@ class LTActivationAtlas:
 
         import comfy.model_management as mm
         device = mm.get_torch_device()
-        latent_samples = latent["samples"].to(device)
+
+        # Get model dtype
+        model_dtype = mm.unet_dtype(model_params=model.model.diffusion_model.state_dict(), supported_dtypes=mm.unet_dtypes(device))
+
+        latent_samples = latent["samples"].to(device, dtype=model_dtype)
 
         # Parse channel indices
         try:
@@ -420,7 +427,7 @@ class LTActivationAtlas:
             mm.load_model_gpu(model)
 
             # Forward pass
-            timesteps = torch.tensor([timestep], device=device)
+            timesteps = torch.tensor([timestep], device=device, dtype=torch.long)
 
             # Prepare context from conditioning if provided
             context = None
@@ -430,7 +437,7 @@ class LTActivationAtlas:
                 if isinstance(positive, list) and len(positive) > 0:
                     context = positive[0][0] if isinstance(positive[0], (list, tuple)) else positive[0]
                     if hasattr(context, 'to'):
-                        context = context.to(device)
+                        context = context.to(device, dtype=model_dtype)
 
             # Check if model needs class conditioning (SDXL models)
             y = None
@@ -440,14 +447,14 @@ class LTActivationAtlas:
                     # Create a minimal y vector for SDXL models
                     # This uses default values: 1024x1024 image, no crops, aesthetic score 6.0
                     adm_channels = unet_config.get('adm_in_channels', 2816)
-                    y = torch.zeros((latent_samples.shape[0], adm_channels), device=device)
+                    y = torch.zeros((latent_samples.shape[0], adm_channels), device=device, dtype=model_dtype)
 
                     # If we have conditioning with pooled output (SDXL), use it
                     if positive is not None and isinstance(positive, list) and len(positive) > 0:
                         if isinstance(positive[0], (list, tuple)) and len(positive[0]) > 1:
                             cond_dict = positive[0][1] if isinstance(positive[0][1], dict) else {}
                             if 'pooled_output' in cond_dict:
-                                pooled = cond_dict['pooled_output'].to(device)
+                                pooled = cond_dict['pooled_output'].to(device, dtype=model_dtype)
                                 # Ensure y has the right shape by padding or truncating
                                 if pooled.shape[-1] <= adm_channels:
                                     y[:, :pooled.shape[-1]] = pooled
